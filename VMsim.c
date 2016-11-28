@@ -59,7 +59,7 @@ int read_all(void* p);
 /* Page request Handler */
 void init_request();
 int submit_request(vpager_t* p, int value);
-void set_request(vpager_t* p, prequest_t* r, int value);
+int set_request(vpager_t* p, prequest_t* r, int value);
 void clear_request();
 void release_request();
 
@@ -96,11 +96,13 @@ int main(int argc, char** argv) {
 	/* blocking call to manage */
 	manage(m);
 
-	/* process cleanup */
+	/* process cleanup
 	release_mmanager(m);
 	release_request();
+
 	free(mutex);
 	free(m_response);
+	*/
 
 	return 0;
 }
@@ -116,17 +118,21 @@ int submit_request(vpager_t* p, int value) {
 		return -1;
 	}
 
-	set_request(p, request, value);
-
-	return 0;
+	return set_request(p, request, value);
 }
 
 /* sets the values of the provided request */
-void set_request(vpager_t* p, prequest_t* r, int value) {
+int set_request(vpager_t* p, prequest_t* r, int value) {
+	int page = value / p->p_size;
+	if (page >= p->p_num) {
+		return -2;
+	}
+
 	r->pid = p->id;
 	r->address = value;
 	r->offset = value % p->p_size;
 	r->page = value / p->p_size;
+	return 0;
 }
 
 void clear_request() {
@@ -157,6 +163,7 @@ mmanager_t* init_mmanager(int S, int F, int n) {
 
 void release_mmanager(mmanager_t* m) {
 	for (int i = 0; i < m->pagers_num; i++) {
+		//fclose(m->pagers[i]->source);
 		release_vpager(m->pagers[i]);
 	}
 	free(m->pagers);
@@ -287,7 +294,7 @@ void set_frame(mmanager_t* m, int frame, int pid, int page) {
 vpager_t** start_vpagers(int n, int S, int P) {
 	vpager_t** pagers = malloc(n * sizeof(vpager_t*));
 	for (int i = 0; i < n; i++) {
-		pagers[i] = init_vpager(S, P, i+1);
+		pagers[i] = init_vpager(S, P, i);
 		clone(read_all, pagers[i]->stack, CLONE_VM, (void*)pagers[i]);
 	}
 	return pagers;
@@ -303,7 +310,7 @@ vpager_t* init_vpager(int S, int P, int file_num) {
 	p->active = 0;
 
 	char f_name[16];
-	sprintf(f_name,"trace_%d.txt", p->id);
+	sprintf(f_name,"trace_%d.txt", p->id+1);
 	p->source = fopen(f_name, "r");
 
 	return p;
@@ -321,12 +328,14 @@ int read_all(void* o) {
 	ssize_t read = getline(&line, &len, p->source);
 
 	int success = 0;
-
 	while (read != -1) {
 		sem_wait(mutex);
 		success = submit_request(p, atoi(line));
 		sem_post(mutex);
-		if (success != -1) {
+		if (success == -2) {
+			printf("[Process %d] address %d is invalid and so the user process terminates.\n", p->id, atoi(line));
+			break;
+		} else if (success != -1) {
 			// wait for response
 			sem_wait(m_response);
 			prequest_t local;
@@ -338,13 +347,5 @@ int read_all(void* o) {
 	// process ends after all lines have been read
 	printf("[Process %d] ends.\n", p->id);
 	p->active = -1;
-
 	return 0;
-}
-
-/* returns value on line if not EOF, -1 otherwise */
-int read_line(vpager_t* p) {
-	int value = -1;
-	fscanf(p->source, "%d", &value);
-	return value;
 }
